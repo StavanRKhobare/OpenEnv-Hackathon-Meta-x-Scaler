@@ -1,8 +1,8 @@
-"""Grader for Task 1 — Bug Detection (easy).
+"""Grader for Task 1 — Feasibility Check (easy).
 
 Scoring:
-    1.0  — exact match with ground truth (yes/no)
-    0.1  — agent gave a response but it was wrong (partial signal)
+    1.0  — exact match: agent correctly identifies feasible/infeasible
+    0.1  — agent responded but answer is wrong (partial signal)
     0.0  — empty or unparseable response
 """
 
@@ -13,28 +13,30 @@ from typing import Any
 from models import Action
 
 
-class DetectionGrader:
-    """Grade whether the agent correctly identified if a bug exists."""
+class FeasibilityGrader:
+    """Grade whether the agent correctly determined schedule feasibility."""
 
     def grade(self, action: Action, ground_truth: dict[str, Any]) -> float:
         response = action.response.strip().lower()
-        has_bug: bool = ground_truth.get("has_bug", False)
-        expected = "yes" if has_bug else "no"
+        is_feasible: bool = ground_truth.get("is_feasible", False)
+        expected = "feasible" if is_feasible else "infeasible"
 
         if not response:
             return 0.0
 
-        # Normalize common variants
-        positive = {"yes", "true", "1", "bug", "buggy"}
-        negative = {"no", "false", "0", "clean", "correct", "no bug"}
+        # Normalise common variants the agent might produce
+        feasible_words = {"feasible", "valid", "correct", "satisfiable", "yes"}
+        infeasible_words = {
+            "infeasible", "invalid", "incorrect", "unsatisfiable", "no",
+            "violated", "conflict", "impossible",
+        }
 
-        if response in positive:
-            answer = "yes"
-        elif response in negative:
-            answer = "no"
+        if response in feasible_words:
+            answer = "feasible"
+        elif response in infeasible_words:
+            answer = "infeasible"
         else:
-            # Partial credit for trying — the agent responded but we
-            # couldn't parse it cleanly.
+            # Agent responded but we could not parse it — small partial signal
             return 0.1
 
         # Exact match → full score; wrong answer → small partial signal

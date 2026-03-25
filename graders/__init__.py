@@ -1,1 +1,1 @@
-"""Graders for each code review task."""
+"""Graders for each scheduling optimisation task."""

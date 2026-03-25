@@ -1,4 +1,4 @@
-"""FastAPI server exposing the Code Review Environment as an HTTP API."""
+"""FastAPI server exposing the Scheduling Optimisation Environment as an HTTP API."""
 
 from __future__ import annotations
 
@@ -7,28 +7,32 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from environment import CodeReviewEnv
-from graders.grader_classification import ClassificationGrader
-from graders.grader_detection import DetectionGrader
-from graders.grader_fix import FixGrader
+from environment import SchedulingOptEnv
+from graders.grader_classification import ConflictGrader
+from graders.grader_detection import FeasibilityGrader
+from graders.grader_fix import RepairGrader
 from models import Action, Observation
 
 app = FastAPI(
-    title="Code Review Environment",
-    description="OpenEnv-compatible environment for AI-powered code review training.",
+    title="Scheduling Optimisation Environment",
+    description=(
+        "OpenEnv-compatible environment for training AI agents on combinatorial "
+        "scheduling optimisation problems."
+    ),
     version="1.0.0",
 )
 
 # Single shared environment instance.
-env = CodeReviewEnv()
+env = SchedulingOptEnv()
 
 
 # ---------------------------------------------------------------------------
 # Request / response schemas
 # ---------------------------------------------------------------------------
 
+
 class ResetRequest(BaseModel):
-    task_id: str = "bug_detection"
+    task_id: str = "feasibility_check"
 
 
 class StepResponse(BaseModel):
@@ -51,16 +55,20 @@ class GradeResponse(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.get("/health")
 def health() -> dict[str, str]:
-    """Health check for HF Spaces ping."""
+    """Health check for Hugging Face Spaces liveness probe."""
     return {"status": "ok"}
 
 
 @app.post("/reset", response_model=Observation)
 def reset(req: ResetRequest) -> Observation:
-    """Reset the environment and start a new episode."""
-    valid_tasks = {"bug_detection", "bug_classification", "code_fix"}
+    """Reset the environment and start a new episode.
+
+    Body: {"task_id": "feasibility_check" | "conflict_classification" | "schedule_repair"}
+    """
+    valid_tasks = {"feasibility_check", "conflict_classification", "schedule_repair"}
     if req.task_id not in valid_tasks:
         raise HTTPException(
             status_code=400,
@@ -71,7 +79,10 @@ def reset(req: ResetRequest) -> Observation:
 
 @app.post("/step", response_model=StepResponse)
 def step(action: Action) -> StepResponse:
-    """Submit an action and advance the environment by one step."""
+    """Submit an action and advance the environment by one step.
+
+    Body: {"response": "<answer>", "task_id": "<task_id>"}
+    """
     obs, reward, done, info = env.step(action)
     return StepResponse(observation=obs, reward=reward, done=done, info=info)
 
@@ -87,50 +98,64 @@ def tasks() -> list[dict[str, Any]]:
     """List available tasks with their action schemas."""
     return [
         {
-            "task_id": "bug_detection",
-            "name": "Bug Detection",
+            "task_id": "feasibility_check",
+            "name": "Feasibility Check",
             "difficulty": "easy",
             "max_steps": 3,
-            "action_schema": {"response": "yes | no", "task_id": "bug_detection"},
-        },
-        {
-            "task_id": "bug_classification",
-            "name": "Bug Classification",
-            "difficulty": "medium",
-            "max_steps": 5,
             "action_schema": {
-                "response": "syntax_error | logic_error | null_reference | security_flaw | performance_issue",
-                "task_id": "bug_classification",
+                "response": "feasible | infeasible",
+                "task_id": "feasibility_check",
             },
         },
         {
-            "task_id": "code_fix",
-            "name": "Code Fix",
+            "task_id": "conflict_classification",
+            "name": "Conflict Classification",
+            "difficulty": "medium",
+            "max_steps": 5,
+            "action_schema": {
+                "response": (
+                    "resource_overload | deadline_violation | precedence_violation | "
+                    "availability_conflict | capacity_exceeded"
+                ),
+                "task_id": "conflict_classification",
+            },
+        },
+        {
+            "task_id": "schedule_repair",
+            "name": "Schedule Repair",
             "difficulty": "hard",
             "max_steps": 8,
-            "action_schema": {"response": "<corrected python code>", "task_id": "code_fix"},
+            "action_schema": {
+                "response": '{"assignments": [{"job_id": "J1", "machine_id": "M1", "start_time": 0}, ...]}',
+                "task_id": "schedule_repair",
+            },
         },
     ]
 
 
 @app.post("/grader", response_model=GradeResponse)
 def grader(req: GradeRequest) -> GradeResponse:
-    """Directly invoke a grader with an action and ground truth."""
+    """Directly invoke a grader with an action and ground truth.
+
+    Body: {"action": {"response": "...", "task_id": "..."}, "ground_truth": {...}}
+    """
     task_id = req.action.task_id
     grader_map = {
-        "bug_detection": DetectionGrader(),
-        "bug_classification": ClassificationGrader(),
-        "code_fix": FixGrader(),
+        "feasibility_check": FeasibilityGrader(),
+        "conflict_classification": ConflictGrader(),
+        "schedule_repair": RepairGrader(),
     }
     g = grader_map.get(task_id)
     if g is None:
-        raise HTTPException(status_code=400, detail=f"No grader for task_id={task_id}")
+        raise HTTPException(
+            status_code=400, detail=f"No grader for task_id={task_id}"
+        )
     score = g.grade(req.action, req.ground_truth)
     return GradeResponse(score=max(0.0, min(1.0, score)))
 
 
 @app.get("/baseline")
 def baseline() -> dict[str, Any]:
-    """Run the baseline agent and return scores for all 3 tasks."""
+    """Trigger the baseline inference agent and return per-task scores."""
     from baseline import run_baseline
     return run_baseline()

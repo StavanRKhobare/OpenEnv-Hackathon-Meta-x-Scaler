@@ -1,4 +1,4 @@
-# CodeReviewEnv: A Structured Environment for Training Autonomous Code Review Agents
+# SchedulingOptEnv: A Markov Decision Environment for Training Autonomous Scheduling Optimisation Agents
 
 **Meta × Scaler OpenEnv Hackathon Submission**
 
@@ -6,20 +6,20 @@
 
 ## Abstract
 
-We present **CodeReviewEnv**, a real-world training environment for autonomous AI agents built on the OpenEnv framework. The environment operationalises the software engineering task of code review as a sequential decision problem, exposing agents to three progressively difficult sub-tasks: binary bug detection, multi-class bug classification, and full code repair. Each task is accompanied by a structured grading function that provides dense, partial-progress reward signals rather than sparse binary outcomes. A 12-snippet Python code corpus, a FastAPI inference server, and a GPT-4o-mini baseline are included. The environment is deployable as a Docker container on Hugging Face Spaces with a single command.
+We present **SchedulingOptEnv**, a real-world training environment for autonomous AI agents built upon the OpenEnv framework. The environment formalises combinatorial scheduling optimisation as a sequential decision problem, exposing agents to three progressively challenging sub-tasks: binary feasibility determination, multi-class constraint-violation classification, and full schedule repair. Each task is paired with a structured, differentiable reward function that provides dense, partial-progress signals rather than sparse binary outcomes. A 12-instance scheduling corpus covering five distinct constraint-violation classes, a FastAPI inference server, and a GPT-4o-mini baseline are included. The environment is deployable as a Docker container on Hugging Face Spaces with a single command.
 
 ---
 
 ## 1. Introduction
 
-Automated code review is among the most economically valuable applications of large language models. Human code review consumes a significant fraction of engineering time in production software teams, yet existing benchmarks for evaluating code-reviewing AI agents are either purely static (single-shot pass/fail) or narrowly scoped to code generation rather than review. OpenEnv [1] provides an abstraction layer for building _interactive_ environments where agents act, receive graded feedback, and improve over episodes.
+Combinatorial scheduling — the assignment of jobs to machines subject to resource, temporal, and precedence constraints — is a foundational problem in operations research, manufacturing, cloud computing, and logistics. Despite its industrial importance, existing benchmarks for evaluating AI agents on scheduling tasks are either purely offline (single-pass solution quality) or narrowly scoped to continuous optimisation rather than the constraint-satisfaction and repair workflow practised by human planners.
 
-CodeReviewEnv fills a gap by framing code review as a Markov Decision Process (MDP) with:
+OpenEnv [1] provides an abstraction layer for building *interactive* environments where agents act, receive graded feedback, and improve across episodes. SchedulingOptEnv fills a gap by framing schedule analysis and repair as a Markov Decision Process (MDP) with:
 
-- A well-defined **observation space** (code snippet, task context, step counter)
-- A structured **action space** (natural-language responses or code patches)
-- A **multi-component reward function** that awards partial credit for syntactically valid but semantically incomplete solutions
-- Three **difficulty tiers** reflecting real-world cognitive load gradients in code review
+- A well-defined **observation space** (JSON-encoded scheduling instance, task context, step counter)
+- A structured **action space** (categorical labels or JSON repair schedules)
+- A **multi-component reward function** that awards partial credit for structurally valid but suboptimal repairs
+- Three **difficulty tiers** mirroring the cognitive complexity gradient faced by human schedulers
 
 ---
 
@@ -29,45 +29,47 @@ CodeReviewEnv fills a gap by framing code review as a Markov Decision Process (M
 
 | Component | Definition |
 |-----------|-----------|
-| State *S* | Current code snippet, task type, step count, episode history |
-| Observation *O* | `{code_snippet, task_id, context, step_number}` |
+| State *S* | Current scheduling instance, task type, step count, episode history |
+| Observation *O* | `{schedule_instance: str (JSON), task_id, context, step_number}` |
 | Action *A* | `{response: str, task_id: str}` |
 | Reward *R* | Float ∈ [0.0, 1.0] from task-specific grader |
 | Horizon *T* | Task-dependent: 3 / 5 / 8 steps |
 | Terminal | *done* = True when *T* reached or *R* ≥ 0.95 |
 
-### 2.2 Code Corpus
+### 2.2 Scheduling Instance Corpus
 
-The environment ships with 12 curated Python snippets spanning a representative distribution of real-world defect classes:
+The environment ships with 12 curated scheduling instances spanning five constraint-violation classes plus two fully feasible baselines:
 
-| # | Defect Class | Snippet Description |
-|---|--------------|---------------------|
-| 0 | Logic error | Off-by-one in loop range |
-| 1 | Security flaw | SQL injection via f-string |
-| 2 | Null reference | IndexError on empty list |
-| 3 | Logic error | Infinite loop (missing decrement) |
-| 4 | Logic error | Wrong variable in f-string |
-| 5 | Logic error | Missing return statement |
-| 6 | Logic error | Type mismatch (int + str) |
-| 7 | Security flaw | Insecure randomness (`random` vs `secrets`) |
-| 8 | Performance issue | O(n²) list membership check |
-| 9 | Null reference | No bounds check on list index |
-| 10 | — (correct) | Correct Fibonacci implementation |
-| 11 | — (correct) | Correct dictionary merge |
+| # | Feasible | Violation Class | Description |
+|---|----------|----------------|-------------|
+| 0 | No | `resource_overload` | J1 and J2 overlap on single-capacity machine M1 |
+| 1 | No | `deadline_violation` | J1 starts late and finishes after hard deadline |
+| 2 | No | `precedence_violation` | J2 starts before its predecessor J1 finishes |
+| 3 | No | `availability_conflict` | J1 scheduled outside machine operating hours |
+| 4 | No | `capacity_exceeded` | 3 concurrent jobs on capacity-2 machine |
+| 5 | No | `resource_overload` | Pairwise overlap of J1 and J2 on capacity-1 machine |
+| 6 | No | `deadline_violation` | Precedence chain forces J3 past hard deadline |
+| 7 | No | `precedence_violation` | J3 starts before both predecessors complete |
+| 8 | No | `availability_conflict` | J1 extends into machine maintenance window |
+| 9 | No | `capacity_exceeded` | 4 concurrent jobs on capacity-3 machine |
+| 10 | Yes | — | Fully feasible 3-job, 2-machine schedule |
+| 11 | Yes | — | Fully feasible 5-job, 3-machine schedule with precedence |
 
 ---
 
 ## 3. Tasks
 
-### Task 1 — Bug Detection *(Easy)*
+### Task 1 — Feasibility Check *(Easy)*
 
-**Objective:** Given a code snippet, respond `"yes"` (bug present) or `"no"` (bug absent).
+**Objective:** Given a JSON-encoded scheduling instance (jobs, machines, proposed assignments), determine whether the schedule satisfies all constraints.
+
+**Action space:** `{"feasible", "infeasible"}`
 
 **Grading function:**
 
 ```
 R(a, g) = 1.0   if normalise(a) == ground_truth
-          0.1   if a is non-empty but wrong
+          0.1   if a is non-empty but incorrect
           0.0   if a is empty
 ```
 
@@ -75,41 +77,55 @@ R(a, g) = 1.0   if normalise(a) == ground_truth
 
 ---
 
-### Task 2 — Bug Classification *(Medium)*
+### Task 2 — Conflict Classification *(Medium)*
 
-**Objective:** Classify the bug type from a closed vocabulary:
-`{syntax_error, logic_error, null_reference, security_flaw, performance_issue}`.
+**Objective:** Identify the constraint violation present in an infeasible schedule from the closed vocabulary:
+`{resource_overload, deadline_violation, precedence_violation, availability_conflict, capacity_exceeded}`
 
 **Grading function:**
 
 ```
-R(a, g) = 1.0   if a == ground_truth                   (exact)
-          0.5   if a ∈ related_group(ground_truth)     (partial)
-          0.1   if a ∈ valid_categories \ {g}          (wrong but valid)
-          0.0   if a ∉ valid_categories                (unparseable)
+R(a, g) = 1.0   if a == ground_truth                             (exact)
+          0.5   if a ∈ related_group(ground_truth)               (partial)
+          0.1   if a ∈ valid_categories \ related_group(g)       (wrong family)
+          0.0   if a ∉ valid_categories                          (unparseable)
 ```
 
-where `related_groups = [{logic_error, null_reference}, {security_flaw, performance_issue}]`.
+where `related_groups = [{resource_overload, capacity_exceeded}, {deadline_violation, precedence_violation}]`.
 
 **Episode horizon:** 5 steps. **Target agent accuracy:** ~60%.
 
 ---
 
-### Task 3 — Code Fix *(Hard)*
+### Task 3 — Schedule Repair *(Hard)*
 
-**Objective:** Return corrected Python code that resolves the identified bug.
+**Objective:** Return a corrected schedule as a JSON object that resolves all constraint violations and minimises total makespan.
+
+**Required JSON format:**
+```json
+{
+  "assignments": [
+    {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+    {"job_id": "J2", "machine_id": "M1", "start_time": 4}
+  ]
+}
+```
 
 **Grading function (additive, max 1.0):**
 
 ```
-R(a, g) = 0.4 × compiles(a)
-        + 0.4 × (tests_passed(a, g) / total_tests(g))
-        + 0.2 × static_clean(a)
+R(a, g) = 0.2 × parseable_json(a)
+        + 0.2 × valid_schema(a, g)
+        + 0.4 × constraint_satisfaction_ratio(a, g)
+        + 0.2 × optimality_score(makespan(a), makespan*(g))
 ```
 
-- `compiles(a)` — 1 if the submitted code parses as valid Python, else 0
-- `tests_passed / total_tests` — fraction of ground-truth assertions that hold
-- `static_clean(a)` — 1 if no dangerous patterns (`eval`, `exec`, unsafe imports) are introduced
+where:
+- `parseable_json(a)` — 1 if the response parses as valid JSON, else 0
+- `valid_schema(a, g)` — 1 if all required fields are present and all jobs are assigned, else 0
+- `constraint_satisfaction_ratio(a, g)` — fraction of four constraint categories satisfied:
+  capacity, deadlines, precedence, availability (each worth 0.25)
+- `optimality_score(m, m*)` — 1.0 if *m* ≤ 1.30·*m** ; 0.5 if *m* ≤ 1.60·*m** ; 0 otherwise
 
 **Episode horizon:** 8 steps. **Target agent accuracy:** ~30%.
 
@@ -122,8 +138,8 @@ The environment is exposed over HTTP via a FastAPI server.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/health` | Liveness probe |
-| `POST` | `/reset` | Begin new episode: `{"task_id": "bug_detection"}` |
-| `POST` | `/step` | Submit action: `{"response": "yes", "task_id": "bug_detection"}` |
+| `POST` | `/reset` | Begin new episode: `{"task_id": "feasibility_check"}` |
+| `POST` | `/step` | Submit action: `{"response": "infeasible", "task_id": "feasibility_check"}` |
 | `GET` | `/state` | Full internal state snapshot |
 | `GET` | `/tasks` | Task catalogue with action schemas |
 | `POST` | `/grader` | Direct grader invocation for offline evaluation |
@@ -133,16 +149,16 @@ The environment is exposed over HTTP via a FastAPI server.
 
 ## 5. Baseline
 
-A standalone inference script (`baseline.py`) evaluates GPT-4o-mini on all three tasks. When `OPENAI_API_KEY` is not set the script falls back to pre-computed mock responses, enabling offline verification of the grading pipeline.
+A standalone inference script (`baseline.py`) evaluates GPT-4o-mini on all three tasks. When `OPENAI_API_KEY` is not set, the script falls back to oracle mock responses, enabling offline verification of the grading pipeline without API access.
 
 ### 5.1 Baseline Scores (Mock / Oracle)
 
-| Task | Snippets | Average Score |
-|------|----------|--------------|
-| Bug Detection | 12 | 1.000 |
-| Bug Classification | 10 | 1.000 |
-| Code Fix | 10 | 0.960 |
-| **Overall** | | **0.987** |
+| Task | Instances | Average Score |
+|------|-----------|--------------|
+| Feasibility Check | 12 | 1.000 |
+| Conflict Classification | 10 | 1.000 |
+| Schedule Repair | 10 | 1.000 |
+| **Overall** | | **1.000** |
 
 ---
 
@@ -158,13 +174,13 @@ uvicorn server:app --host 0.0.0.0 --port 7860
 ### 6.2 Docker
 
 ```bash
-docker build -t code-review-env .
-docker run -p 7860:7860 code-review-env
+docker build -t scheduling-opt-env .
+docker run -p 7860:7860 scheduling-opt-env
 ```
 
 ### 6.3 Hugging Face Spaces
 
-Push this repository to a Hugging Face Space configured with the **Docker** SDK. The server listens on port 7860, which Spaces exposes automatically.
+Push this repository to a Hugging Face Space configured with the **Docker** SDK. The server listens on port 7860, which Spaces exposes automatically. No additional configuration is required.
 
 ### 6.4 Baseline (with LLM)
 
@@ -178,26 +194,52 @@ python baseline.py
 ## 7. Example Interaction
 
 ```bash
-# 1. Start an episode
+# 1. Health check
+curl http://localhost:7860/health
+
+# 2. Start a feasibility-check episode
 curl -X POST http://localhost:7860/reset \
   -H "Content-Type: application/json" \
-  -d '{"task_id": "bug_detection"}'
+  -d '{"task_id": "feasibility_check"}'
 
-# 2. Submit a response
+# 3. Submit a feasibility answer
 curl -X POST http://localhost:7860/step \
   -H "Content-Type: application/json" \
-  -d '{"response": "yes", "task_id": "bug_detection"}'
+  -d '{"response": "infeasible", "task_id": "feasibility_check"}'
 
-# 3. Inspect environment state
+# 4. Start a conflict-classification episode
+curl -X POST http://localhost:7860/reset \
+  -H "Content-Type: application/json" \
+  -d '{"task_id": "conflict_classification"}'
+
+# 5. Classify the violation
+curl -X POST http://localhost:7860/step \
+  -H "Content-Type: application/json" \
+  -d '{"response": "resource_overload", "task_id": "conflict_classification"}'
+
+# 6. Start a schedule-repair episode
+curl -X POST http://localhost:7860/reset \
+  -H "Content-Type: application/json" \
+  -d '{"task_id": "schedule_repair"}'
+
+# 7. Submit a repaired schedule
+curl -X POST http://localhost:7860/step \
+  -H "Content-Type: application/json" \
+  -d '{
+    "response": "{\"assignments\": [{\"job_id\": \"J1\", \"machine_id\": \"M1\", \"start_time\": 0}]}",
+    "task_id": "schedule_repair"
+  }'
+
+# 8. Inspect environment state
 curl http://localhost:7860/state
 
-# 4. Invoke a grader directly
+# 9. Invoke a grader directly
 curl -X POST http://localhost:7860/grader \
   -H "Content-Type: application/json" \
   -d '{
-        "action": {"response": "logic_error", "task_id": "bug_classification"},
-        "ground_truth": {"bug_type": "logic_error"}
-      }'
+    "action": {"response": "deadline_violation", "task_id": "conflict_classification"},
+    "ground_truth": {"violation_type": "deadline_violation"}
+  }'
 ```
 
 ---
@@ -206,21 +248,21 @@ curl -X POST http://localhost:7860/grader \
 
 ```
 .
-├── openenv.yaml          # OpenEnv metadata manifest
-├── models.py             # Pydantic v2 data models
-├── environment.py        # CodeReviewEnv (reset / step / state)
-├── server.py             # FastAPI HTTP server
-├── baseline.py           # GPT-4o-mini baseline script
-├── Dockerfile            # Container definition (port 7860)
-├── requirements.txt      # Python dependencies
+├── openenv.yaml                  # OpenEnv metadata manifest
+├── models.py                     # Pydantic v2 data models
+├── environment.py                # SchedulingOptEnv (reset / step / state)
+├── server.py                     # FastAPI HTTP server
+├── baseline.py                   # GPT-4o-mini baseline script
+├── Dockerfile                    # Container definition (port 7860)
+├── requirements.txt              # Python dependencies
 ├── tasks/
-│   ├── task1_easy.py     # Bug detection task module
-│   ├── task2_medium.py   # Bug classification task module
-│   └── task3_hard.py     # Code fix task module
+│   ├── task1_easy.py             # Feasibility check task module
+│   ├── task2_medium.py           # Conflict classification task module
+│   └── task3_hard.py             # Schedule repair task module
 └── graders/
-    ├── grader_detection.py      # Grader: binary detection
-    ├── grader_classification.py # Grader: multi-class classification
-    └── grader_fix.py            # Grader: code repair (multi-component)
+    ├── grader_detection.py       # Grader: feasibility (binary)
+    ├── grader_classification.py  # Grader: conflict classification (multi-class)
+    └── grader_fix.py             # Grader: schedule repair (multi-component)
 ```
 
 ---
@@ -231,7 +273,7 @@ curl -X POST http://localhost:7860/grader \
 |---------|---------|---------|
 | `fastapi` | ≥ 0.104 | HTTP server framework |
 | `uvicorn` | ≥ 0.24 | ASGI server |
-| `pydantic` | ≥ 2.5 | Data validation |
+| `pydantic` | ≥ 2.5 | Data validation and serialisation |
 | `openai` | ≥ 1.6 | LLM baseline inference |
 | `pyyaml` | ≥ 6.0 | YAML manifest parsing |
 | `httpx` | ≥ 0.25 | Async HTTP client |
@@ -242,6 +284,10 @@ curl -X POST http://localhost:7860/grader \
 
 [1] OpenEnv Framework. *Building Real-World AI Agent Training Environments*. Meta × Scaler Hackathon, 2026.
 
-[2] Chen, M. et al. *Evaluating Large Language Models Trained on Code*. arXiv:2107.03374.
+[2] Pinedo, M. L. *Scheduling: Theory, Algorithms, and Systems* (5th ed.). Springer, 2016.
 
-[3] Austin, J. et al. *Program Synthesis with Large Language Models*. arXiv:2108.07732.
+[3] Garey, M. R., & Johnson, D. S. *Computers and Intractability: A Guide to the Theory of NP-Completeness*. W. H. Freeman, 1979.
+
+[4] Zhang, C. et al. *Learning to Dispatch for Job Shop Scheduling via Deep Reinforcement Learning*. NeurIPS 2020.
+
+[5] Kwon, Y.-D. et al. *POMO: Policy Optimization with Multiple Optima for Reinforcement Learning*. NeurIPS 2020.

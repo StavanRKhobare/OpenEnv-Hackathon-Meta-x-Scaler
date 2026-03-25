@@ -1,51 +1,56 @@
-name: code-review-env
+name: scheduling-opt-env
 description: >
-  A real-world AI agent training environment for automated code review.
-  Agents must detect bugs, classify issue types, and propose fixes for
-  Python code snippets — mirroring the daily workflow of software engineers.
+  A real-world AI agent training environment for combinatorial scheduling
+  optimisation. Agents must determine schedule feasibility, classify constraint
+  violations, and repair infeasible schedules to minimise makespan — mirroring
+  the daily workflow of operations researchers and production planners.
 version: "1.0.0"
-author: "Team CodeReview"
+author: "Team SchedulingOpt"
 license: MIT
 
 tasks:
-  - id: bug_detection
-    name: Bug Detection
+  - id: feasibility_check
+    name: Feasibility Check
     difficulty: easy
-    description: Determine whether a Python code snippet contains a bug.
+    description: Determine whether a proposed schedule satisfies all constraints.
     max_steps: 3
     action_schema:
       response:
         type: string
-        enum: ["yes", "no"]
+        enum: ["feasible", "infeasible"]
       task_id:
         type: string
 
-  - id: bug_classification
-    name: Bug Classification
+  - id: conflict_classification
+    name: Conflict Classification
     difficulty: medium
-    description: Classify the type of bug present in a Python code snippet.
+    description: Identify the type of constraint violation present in an infeasible schedule.
     max_steps: 5
     action_schema:
       response:
         type: string
         enum:
-          - syntax_error
-          - logic_error
-          - null_reference
-          - security_flaw
-          - performance_issue
+          - resource_overload
+          - deadline_violation
+          - precedence_violation
+          - availability_conflict
+          - capacity_exceeded
       task_id:
         type: string
 
-  - id: code_fix
-    name: Code Fix
+  - id: schedule_repair
+    name: Schedule Repair
     difficulty: hard
-    description: Provide corrected Python code that fixes the identified bug.
+    description: >
+      Return a corrected schedule (as JSON) that resolves all constraint
+      violations and minimises total makespan.
     max_steps: 8
     action_schema:
       response:
         type: string
-        description: The corrected Python code.
+        description: >
+          JSON object with key "assignments": list of {job_id, machine_id,
+          start_time} dicts.
       task_id:
         type: string
 
@@ -54,7 +59,9 @@ action_space:
   properties:
     response:
       type: string
-      description: The agent's response (yes/no, bug category, or corrected code).
+      description: >
+        The agent's response: "feasible"/"infeasible", a violation category,
+        or a JSON repair schedule.
     task_id:
       type: string
       description: Identifier for the current task.
@@ -62,9 +69,9 @@ action_space:
 observation_space:
   type: object
   properties:
-    code_snippet:
+    schedule_instance:
       type: string
-      description: The Python code snippet to review.
+      description: JSON-encoded scheduling problem instance (jobs, machines, proposed assignments).
     task_id:
       type: string
       description: Current task identifier.

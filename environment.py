@@ -1,286 +1,451 @@
-"""Core Code Review Environment implementing the OpenEnv API contract."""
+"""Core Scheduling Optimisation Environment implementing the OpenEnv API contract."""
 
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any
 
 from models import Action, Observation
 
 # ---------------------------------------------------------------------------
-# Code snippet bank — 12 diverse snippets with ground-truth metadata.
+# Scheduling instance bank — 12 diverse instances with ground-truth metadata.
+#
 # Each entry carries:
-#   code        – the Python source shown to the agent
-#   has_bug     – bool, for Task 1 (bug detection)
-#   bug_type    – str, for Task 2 (bug classification)
-#   fixed_code  – str, for Task 3 (code fix)
-#   tests       – list[str], mini-assert strings evaluated against the fix
-#   description – human-readable summary of the issue
+#   instance        – dict, the scheduling problem (jobs + machines + proposed_schedule)
+#   is_feasible     – bool, for Task 1 (feasibility check)
+#   violation_type  – str | None, for Task 2 (conflict classification)
+#   optimal_schedule – dict, the corrected schedule for Task 3 (schedule repair)
+#   optimal_makespan – int, the minimum achievable makespan
+#   description     – human-readable summary of the issue
 # ---------------------------------------------------------------------------
 
-SNIPPET_BANK: list[dict[str, Any]] = [
-    # 0 — Off-by-one error (logic_error)
+INSTANCE_BANK: list[dict[str, Any]] = [
+    # ------------------------------------------------------------------ #
+    # 0 — resource_overload: two jobs overlap on a single-capacity machine  #
+    # ------------------------------------------------------------------ #
     {
-        "code": (
-            "def average(nums):\n"
-            "    total = 0\n"
-            "    for i in range(1, len(nums)):\n"
-            "        total += nums[i]\n"
-            "    return total / len(nums)\n"
-        ),
-        "has_bug": True,
-        "bug_type": "logic_error",
-        "fixed_code": (
-            "def average(nums):\n"
-            "    total = 0\n"
-            "    for i in range(len(nums)):\n"
-            "        total += nums[i]\n"
-            "    return total / len(nums)\n"
-        ),
-        "tests": [
-            "assert average([2, 4, 6]) == 4.0",
-            "assert average([10]) == 10.0",
-        ],
-        "description": "Off-by-one: loop starts at index 1, skipping the first element.",
+        "instance": {
+            "problem_id": "P01",
+            "jobs": [
+                {"id": "J1", "duration": 4, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J2", "duration": 3, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J3", "duration": 2, "deadline": 20, "dependencies": [], "resource_req": 1},
+            ],
+            "machines": [
+                {"id": "M1", "capacity": 1, "available_start": 0, "available_end": 24},
+                {"id": "M2", "capacity": 1, "available_start": 0, "available_end": 24},
+            ],
+            "proposed_schedule": {
+                "assignments": [
+                    {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                    {"job_id": "J2", "machine_id": "M1", "start_time": 2},
+                    {"job_id": "J3", "machine_id": "M2", "start_time": 0},
+                ]
+            },
+        },
+        "is_feasible": False,
+        "violation_type": "resource_overload",
+        "optimal_schedule": {
+            "assignments": [
+                {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                {"job_id": "J2", "machine_id": "M1", "start_time": 4},
+                {"job_id": "J3", "machine_id": "M2", "start_time": 0},
+            ]
+        },
+        "optimal_makespan": 7,
+        "description": "J1[0,4) and J2[2,5) overlap on M1 (capacity=1) → resource_overload.",
     },
-    # 1 — SQL injection (security_flaw)
+    # ------------------------------------------------------------------ #
+    # 1 — deadline_violation: job finishes after its hard deadline          #
+    # ------------------------------------------------------------------ #
     {
-        "code": (
-            "def get_user(conn, username):\n"
-            '    query = f"SELECT * FROM users WHERE name = \'{username}\'"\n'
-            "    return conn.execute(query).fetchone()\n"
-        ),
-        "has_bug": True,
-        "bug_type": "security_flaw",
-        "fixed_code": (
-            "def get_user(conn, username):\n"
-            '    query = "SELECT * FROM users WHERE name = ?"\n'
-            "    return conn.execute(query, (username,)).fetchone()\n"
-        ),
-        "tests": [],
-        "description": "SQL injection via f-string interpolation.",
+        "instance": {
+            "problem_id": "P02",
+            "jobs": [
+                {"id": "J1", "duration": 5, "deadline": 8, "dependencies": [], "resource_req": 1},
+                {"id": "J2", "duration": 3, "deadline": 20, "dependencies": [], "resource_req": 1},
+            ],
+            "machines": [
+                {"id": "M1", "capacity": 1, "available_start": 0, "available_end": 24},
+            ],
+            "proposed_schedule": {
+                "assignments": [
+                    {"job_id": "J1", "machine_id": "M1", "start_time": 5},
+                    {"job_id": "J2", "machine_id": "M1", "start_time": 0},
+                ]
+            },
+        },
+        "is_feasible": False,
+        "violation_type": "deadline_violation",
+        "optimal_schedule": {
+            "assignments": [
+                {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                {"job_id": "J2", "machine_id": "M1", "start_time": 5},
+            ]
+        },
+        "optimal_makespan": 8,
+        "description": "J1 starts at t=5 and finishes at t=10, violating deadline=8.",
     },
-    # 2 — Unhandled exception / null reference (null_reference)
+    # ------------------------------------------------------------------ #
+    # 2 — precedence_violation: dependent job starts before its predecessor #
+    # ------------------------------------------------------------------ #
     {
-        "code": (
-            "def first_word(text):\n"
-            "    words = text.split()\n"
-            "    return words[0]\n"
-        ),
-        "has_bug": True,
-        "bug_type": "null_reference",
-        "fixed_code": (
-            "def first_word(text):\n"
-            "    if not text or not text.strip():\n"
-            '        return ""\n'
-            "    words = text.split()\n"
-            "    return words[0]\n"
-        ),
-        "tests": [
-            'assert first_word("hello world") == "hello"',
-            'assert first_word("") == ""',
-            'assert first_word("   ") == ""',
-        ],
-        "description": "IndexError when text is empty — words list is empty.",
+        "instance": {
+            "problem_id": "P03",
+            "jobs": [
+                {"id": "J1", "duration": 3, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J2", "duration": 3, "deadline": 20, "dependencies": ["J1"], "resource_req": 1},
+            ],
+            "machines": [
+                {"id": "M1", "capacity": 1, "available_start": 0, "available_end": 24},
+                {"id": "M2", "capacity": 1, "available_start": 0, "available_end": 24},
+            ],
+            "proposed_schedule": {
+                "assignments": [
+                    {"job_id": "J1", "machine_id": "M1", "start_time": 5},
+                    {"job_id": "J2", "machine_id": "M2", "start_time": 0},
+                ]
+            },
+        },
+        "is_feasible": False,
+        "violation_type": "precedence_violation",
+        "optimal_schedule": {
+            "assignments": [
+                {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                {"job_id": "J2", "machine_id": "M2", "start_time": 3},
+            ]
+        },
+        "optimal_makespan": 6,
+        "description": "J2 depends on J1; J2 starts at t=0 but J1 does not finish until t=8.",
     },
-    # 3 — Infinite loop (logic_error)
+    # ------------------------------------------------------------------ #
+    # 3 — availability_conflict: job scheduled outside machine hours        #
+    # ------------------------------------------------------------------ #
     {
-        "code": (
-            "def countdown(n):\n"
-            "    result = []\n"
-            "    while n > 0:\n"
-            "        result.append(n)\n"
-            "        # forgot to decrement n\n"
-            "    return result\n"
-        ),
-        "has_bug": True,
-        "bug_type": "logic_error",
-        "fixed_code": (
-            "def countdown(n):\n"
-            "    result = []\n"
-            "    while n > 0:\n"
-            "        result.append(n)\n"
-            "        n -= 1\n"
-            "    return result\n"
-        ),
-        "tests": [
-            "assert countdown(3) == [3, 2, 1]",
-            "assert countdown(0) == []",
-        ],
-        "description": "Infinite loop — n is never decremented.",
+        "instance": {
+            "problem_id": "P04",
+            "jobs": [
+                {"id": "J1", "duration": 4, "deadline": 24, "dependencies": [], "resource_req": 1},
+                {"id": "J2", "duration": 3, "deadline": 24, "dependencies": [], "resource_req": 1},
+            ],
+            "machines": [
+                {"id": "M1", "capacity": 1, "available_start": 8, "available_end": 18},
+            ],
+            "proposed_schedule": {
+                "assignments": [
+                    {"job_id": "J1", "machine_id": "M1", "start_time": 5},
+                    {"job_id": "J2", "machine_id": "M1", "start_time": 9},
+                ]
+            },
+        },
+        "is_feasible": False,
+        "violation_type": "availability_conflict",
+        "optimal_schedule": {
+            "assignments": [
+                {"job_id": "J1", "machine_id": "M1", "start_time": 8},
+                {"job_id": "J2", "machine_id": "M1", "start_time": 12},
+            ]
+        },
+        "optimal_makespan": 15,
+        "description": "J1 starts at t=5, before M1's available window [8,18] → availability_conflict.",
     },
-    # 4 — Wrong variable usage (logic_error)
+    # ------------------------------------------------------------------ #
+    # 4 — capacity_exceeded: more concurrent jobs than machine capacity     #
+    # ------------------------------------------------------------------ #
     {
-        "code": (
-            "def greet(first_name, last_name):\n"
-            '    return f"Hello, {first_name} {first_name}!"\n'
-        ),
-        "has_bug": True,
-        "bug_type": "logic_error",
-        "fixed_code": (
-            "def greet(first_name, last_name):\n"
-            '    return f"Hello, {first_name} {last_name}!"\n'
-        ),
-        "tests": [
-            'assert greet("Jane", "Doe") == "Hello, Jane Doe!"',
-        ],
-        "description": "Uses first_name twice instead of last_name.",
+        "instance": {
+            "problem_id": "P05",
+            "jobs": [
+                {"id": "J1", "duration": 3, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J2", "duration": 3, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J3", "duration": 3, "deadline": 20, "dependencies": [], "resource_req": 1},
+            ],
+            "machines": [
+                {"id": "M1", "capacity": 2, "available_start": 0, "available_end": 24},
+            ],
+            "proposed_schedule": {
+                "assignments": [
+                    {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                    {"job_id": "J2", "machine_id": "M1", "start_time": 0},
+                    {"job_id": "J3", "machine_id": "M1", "start_time": 0},
+                ]
+            },
+        },
+        "is_feasible": False,
+        "violation_type": "capacity_exceeded",
+        "optimal_schedule": {
+            "assignments": [
+                {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                {"job_id": "J2", "machine_id": "M1", "start_time": 0},
+                {"job_id": "J3", "machine_id": "M1", "start_time": 3},
+            ]
+        },
+        "optimal_makespan": 6,
+        "description": "3 jobs start simultaneously on M1 (capacity=2); concurrent load=3 > 2.",
     },
-    # 5 — Missing return statement (logic_error)
+    # ------------------------------------------------------------------ #
+    # 5 — resource_overload: three-job pairwise overlap on one machine      #
+    # ------------------------------------------------------------------ #
     {
-        "code": (
-            "def is_even(n):\n"
-            "    if n % 2 == 0:\n"
-            "        return True\n"
-            "    # missing return False\n"
-        ),
-        "has_bug": True,
-        "bug_type": "logic_error",
-        "fixed_code": (
-            "def is_even(n):\n"
-            "    if n % 2 == 0:\n"
-            "        return True\n"
-            "    return False\n"
-        ),
-        "tests": [
-            "assert is_even(4) is True",
-            "assert is_even(3) is False",
-        ],
-        "description": "Returns None for odd numbers — missing else branch.",
+        "instance": {
+            "problem_id": "P06",
+            "jobs": [
+                {"id": "J1", "duration": 5, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J2", "duration": 4, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J3", "duration": 2, "deadline": 20, "dependencies": [], "resource_req": 1},
+            ],
+            "machines": [
+                {"id": "M1", "capacity": 1, "available_start": 0, "available_end": 24},
+            ],
+            "proposed_schedule": {
+                "assignments": [
+                    {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                    {"job_id": "J2", "machine_id": "M1", "start_time": 1},
+                    {"job_id": "J3", "machine_id": "M1", "start_time": 8},
+                ]
+            },
+        },
+        "is_feasible": False,
+        "violation_type": "resource_overload",
+        "optimal_schedule": {
+            "assignments": [
+                {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                {"job_id": "J2", "machine_id": "M1", "start_time": 5},
+                {"job_id": "J3", "machine_id": "M1", "start_time": 9},
+            ]
+        },
+        "optimal_makespan": 11,
+        "description": "J1[0,5) and J2[1,5) overlap on M1 (capacity=1) → resource_overload.",
     },
-    # 6 — Type mismatch (logic_error)
+    # ------------------------------------------------------------------ #
+    # 6 — deadline_violation: precedence chain forces late finish           #
+    # ------------------------------------------------------------------ #
     {
-        "code": (
-            "def add_tax(price, tax_rate):\n"
-            '    return price + tax_rate + "%"\n'
-        ),
-        "has_bug": True,
-        "bug_type": "logic_error",
-        "fixed_code": (
-            "def add_tax(price, tax_rate):\n"
-            "    return price * (1 + tax_rate / 100)\n"
-        ),
-        "tests": [
-            "assert abs(add_tax(100, 10) - 110.0) < 0.01",
-        ],
-        "description": "TypeError: concatenating number with string.",
+        "instance": {
+            "problem_id": "P07",
+            "jobs": [
+                {"id": "J1", "duration": 4, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J2", "duration": 5, "deadline": 20, "dependencies": ["J1"], "resource_req": 1},
+                {"id": "J3", "duration": 4, "deadline": 12, "dependencies": ["J2"], "resource_req": 1},
+            ],
+            "machines": [
+                {"id": "M1", "capacity": 1, "available_start": 0, "available_end": 24},
+                {"id": "M2", "capacity": 1, "available_start": 0, "available_end": 24},
+                {"id": "M3", "capacity": 1, "available_start": 0, "available_end": 24},
+            ],
+            "proposed_schedule": {
+                "assignments": [
+                    {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                    {"job_id": "J2", "machine_id": "M2", "start_time": 4},
+                    {"job_id": "J3", "machine_id": "M3", "start_time": 9},
+                ]
+            },
+        },
+        "is_feasible": False,
+        "violation_type": "deadline_violation",
+        "optimal_schedule": {
+            "assignments": [
+                {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                {"job_id": "J2", "machine_id": "M2", "start_time": 4},
+                {"job_id": "J3", "machine_id": "M3", "start_time": 9},
+            ]
+        },
+        "optimal_makespan": 13,
+        "description": "J3 finishes at t=13, violating its hard deadline of t=12.",
     },
-    # 7 — Insecure randomness (security_flaw)
+    # ------------------------------------------------------------------ #
+    # 7 — precedence_violation: job with two predecessors starts too early  #
+    # ------------------------------------------------------------------ #
     {
-        "code": (
-            "import random\n"
-            "\n"
-            "def generate_token(length=32):\n"
-            '    chars = "abcdefghijklmnopqrstuvwxyz0123456789"\n'
-            '    return "".join(random.choice(chars) for _ in range(length))\n'
-        ),
-        "has_bug": True,
-        "bug_type": "security_flaw",
-        "fixed_code": (
-            "import secrets\n"
-            "import string\n"
-            "\n"
-            "def generate_token(length=32):\n"
-            "    chars = string.ascii_lowercase + string.digits\n"
-            '    return "".join(secrets.choice(chars) for _ in range(length))\n'
-        ),
-        "tests": [
-            "assert len(generate_token()) == 32",
-            "assert len(generate_token(16)) == 16",
-        ],
-        "description": "Using random (Mersenne Twister) for security tokens instead of secrets.",
+        "instance": {
+            "problem_id": "P08",
+            "jobs": [
+                {"id": "J1", "duration": 3, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J2", "duration": 4, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J3", "duration": 2, "deadline": 20, "dependencies": ["J1", "J2"], "resource_req": 1},
+            ],
+            "machines": [
+                {"id": "M1", "capacity": 1, "available_start": 0, "available_end": 24},
+                {"id": "M2", "capacity": 1, "available_start": 0, "available_end": 24},
+                {"id": "M3", "capacity": 1, "available_start": 0, "available_end": 24},
+            ],
+            "proposed_schedule": {
+                "assignments": [
+                    {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                    {"job_id": "J2", "machine_id": "M2", "start_time": 0},
+                    {"job_id": "J3", "machine_id": "M3", "start_time": 2},
+                ]
+            },
+        },
+        "is_feasible": False,
+        "violation_type": "precedence_violation",
+        "optimal_schedule": {
+            "assignments": [
+                {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                {"job_id": "J2", "machine_id": "M2", "start_time": 0},
+                {"job_id": "J3", "machine_id": "M3", "start_time": 4},
+            ]
+        },
+        "optimal_makespan": 6,
+        "description": "J3 depends on J1 and J2; J3 starts at t=2 but J2 does not finish until t=4.",
     },
-    # 8 — Performance issue: O(n²) membership check (performance_issue)
+    # ------------------------------------------------------------------ #
+    # 8 — availability_conflict: job overlaps maintenance window            #
+    # ------------------------------------------------------------------ #
     {
-        "code": (
-            "def unique_items(items):\n"
-            "    result = []\n"
-            "    for item in items:\n"
-            "        if item not in result:\n"
-            "            result.append(item)\n"
-            "    return result\n"
-        ),
-        "has_bug": True,
-        "bug_type": "performance_issue",
-        "fixed_code": (
-            "def unique_items(items):\n"
-            "    seen = set()\n"
-            "    result = []\n"
-            "    for item in items:\n"
-            "        if item not in seen:\n"
-            "            seen.add(item)\n"
-            "            result.append(item)\n"
-            "    return result\n"
-        ),
-        "tests": [
-            "assert unique_items([1, 2, 2, 3, 1]) == [1, 2, 3]",
-            "assert unique_items([]) == []",
-        ],
-        "description": "O(n²) due to `in` on a list; use a set for lookups.",
+        "instance": {
+            "problem_id": "P09",
+            "jobs": [
+                {"id": "J1", "duration": 3, "deadline": 24, "dependencies": [], "resource_req": 1},
+                {"id": "J2", "duration": 2, "deadline": 24, "dependencies": [], "resource_req": 1},
+            ],
+            "machines": [
+                {
+                    "id": "M1",
+                    "capacity": 1,
+                    "available_start": 0,
+                    "available_end": 10,
+                    "note": "M1 under maintenance [10, 15]; available again from t=15",
+                },
+            ],
+            "proposed_schedule": {
+                "assignments": [
+                    {"job_id": "J1", "machine_id": "M1", "start_time": 9},
+                    {"job_id": "J2", "machine_id": "M1", "start_time": 0},
+                ]
+            },
+        },
+        "is_feasible": False,
+        "violation_type": "availability_conflict",
+        "optimal_schedule": {
+            "assignments": [
+                {"job_id": "J2", "machine_id": "M1", "start_time": 0},
+                {"job_id": "J1", "machine_id": "M1", "start_time": 2},
+            ]
+        },
+        "optimal_makespan": 5,
+        "description": "J1 starts at t=9, extends into maintenance window [10,15] → availability_conflict.",
     },
-    # 9 — Buffer/index overflow concept (logic_error)
+    # ------------------------------------------------------------------ #
+    # 9 — capacity_exceeded: four jobs on capacity-3 machine simultaneously #
+    # ------------------------------------------------------------------ #
     {
-        "code": (
-            "def safe_get(lst, index):\n"
-            "    return lst[index]\n"
-        ),
-        "has_bug": True,
-        "bug_type": "null_reference",
-        "fixed_code": (
-            "def safe_get(lst, index, default=None):\n"
-            "    if 0 <= index < len(lst):\n"
-            "        return lst[index]\n"
-            "    return default\n"
-        ),
-        "tests": [
-            "assert safe_get([10, 20], 0) == 10",
-            "assert safe_get([10, 20], 5) is None",
-            "assert safe_get([], 0) is None",
-        ],
-        "description": "No bounds checking — IndexError on out-of-range index.",
+        "instance": {
+            "problem_id": "P10",
+            "jobs": [
+                {"id": "J1", "duration": 2, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J2", "duration": 2, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J3", "duration": 2, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J4", "duration": 2, "deadline": 20, "dependencies": [], "resource_req": 1},
+            ],
+            "machines": [
+                {"id": "M1", "capacity": 3, "available_start": 0, "available_end": 24},
+            ],
+            "proposed_schedule": {
+                "assignments": [
+                    {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                    {"job_id": "J2", "machine_id": "M1", "start_time": 0},
+                    {"job_id": "J3", "machine_id": "M1", "start_time": 0},
+                    {"job_id": "J4", "machine_id": "M1", "start_time": 0},
+                ]
+            },
+        },
+        "is_feasible": False,
+        "violation_type": "capacity_exceeded",
+        "optimal_schedule": {
+            "assignments": [
+                {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                {"job_id": "J2", "machine_id": "M1", "start_time": 0},
+                {"job_id": "J3", "machine_id": "M1", "start_time": 0},
+                {"job_id": "J4", "machine_id": "M1", "start_time": 2},
+            ]
+        },
+        "optimal_makespan": 4,
+        "description": "4 jobs start simultaneously on M1 (capacity=3); concurrent load=4 > 3.",
     },
-    # 10 — Correct code (no bug)
+    # ------------------------------------------------------------------ #
+    # 10 — feasible: 3-job, 2-machine schedule satisfying all constraints   #
+    # ------------------------------------------------------------------ #
     {
-        "code": (
-            "def fibonacci(n):\n"
-            "    if n <= 0:\n"
-            "        return []\n"
-            "    if n == 1:\n"
-            "        return [0]\n"
-            "    seq = [0, 1]\n"
-            "    while len(seq) < n:\n"
-            "        seq.append(seq[-1] + seq[-2])\n"
-            "    return seq\n"
-        ),
-        "has_bug": False,
-        "bug_type": "none",
-        "fixed_code": None,
-        "tests": [
-            "assert fibonacci(5) == [0, 1, 1, 2, 3]",
-            "assert fibonacci(0) == []",
-        ],
-        "description": "Correct Fibonacci implementation — no bug.",
+        "instance": {
+            "problem_id": "P11",
+            "jobs": [
+                {"id": "J1", "duration": 4, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J2", "duration": 3, "deadline": 20, "dependencies": [], "resource_req": 1},
+                {"id": "J3", "duration": 5, "deadline": 20, "dependencies": ["J1"], "resource_req": 1},
+            ],
+            "machines": [
+                {"id": "M1", "capacity": 1, "available_start": 0, "available_end": 24},
+                {"id": "M2", "capacity": 1, "available_start": 0, "available_end": 24},
+            ],
+            "proposed_schedule": {
+                "assignments": [
+                    {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                    {"job_id": "J2", "machine_id": "M2", "start_time": 0},
+                    {"job_id": "J3", "machine_id": "M2", "start_time": 4},
+                ]
+            },
+        },
+        "is_feasible": True,
+        "violation_type": None,
+        "optimal_schedule": {
+            "assignments": [
+                {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                {"job_id": "J2", "machine_id": "M2", "start_time": 0},
+                {"job_id": "J3", "machine_id": "M2", "start_time": 4},
+            ]
+        },
+        "optimal_makespan": 9,
+        "description": "Fully feasible 3-job schedule — all constraints satisfied.",
     },
-    # 11 — Correct code (no bug)
+    # ------------------------------------------------------------------ #
+    # 11 — feasible: 5-job, 3-machine schedule with precedence and deadlines#
+    # ------------------------------------------------------------------ #
     {
-        "code": (
-            "def merge_dicts(a, b):\n"
-            "    result = {**a, **b}\n"
-            "    return result\n"
-        ),
-        "has_bug": False,
-        "bug_type": "none",
-        "fixed_code": None,
-        "tests": [
-            'assert merge_dicts({"x": 1}, {"y": 2}) == {"x": 1, "y": 2}',
-        ],
-        "description": "Correct dictionary merge — no bug.",
+        "instance": {
+            "problem_id": "P12",
+            "jobs": [
+                {"id": "J1", "duration": 3, "deadline": 30, "dependencies": [], "resource_req": 1},
+                {"id": "J2", "duration": 2, "deadline": 30, "dependencies": [], "resource_req": 1},
+                {"id": "J3", "duration": 4, "deadline": 30, "dependencies": [], "resource_req": 1},
+                {"id": "J4", "duration": 3, "deadline": 30, "dependencies": ["J1", "J2"], "resource_req": 1},
+                {"id": "J5", "duration": 2, "deadline": 30, "dependencies": ["J3"], "resource_req": 1},
+            ],
+            "machines": [
+                {"id": "M1", "capacity": 1, "available_start": 0, "available_end": 24},
+                {"id": "M2", "capacity": 1, "available_start": 0, "available_end": 24},
+                {"id": "M3", "capacity": 1, "available_start": 0, "available_end": 24},
+            ],
+            "proposed_schedule": {
+                "assignments": [
+                    {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                    {"job_id": "J2", "machine_id": "M2", "start_time": 0},
+                    {"job_id": "J3", "machine_id": "M3", "start_time": 0},
+                    {"job_id": "J4", "machine_id": "M1", "start_time": 3},
+                    {"job_id": "J5", "machine_id": "M3", "start_time": 4},
+                ]
+            },
+        },
+        "is_feasible": True,
+        "violation_type": None,
+        "optimal_schedule": {
+            "assignments": [
+                {"job_id": "J1", "machine_id": "M1", "start_time": 0},
+                {"job_id": "J2", "machine_id": "M2", "start_time": 0},
+                {"job_id": "J3", "machine_id": "M3", "start_time": 0},
+                {"job_id": "J4", "machine_id": "M1", "start_time": 3},
+                {"job_id": "J5", "machine_id": "M3", "start_time": 4},
+            ]
+        },
+        "optimal_makespan": 6,
+        "description": "Fully feasible 5-job, 3-machine schedule with precedence chain — all constraints satisfied.",
     },
 ]
 
 
-class CodeReviewEnv:
-    """OpenEnv-compatible code review environment.
+class SchedulingOptEnv:
+    """OpenEnv-compatible scheduling optimisation environment.
 
     API:
         reset(task_id)  → Observation
@@ -292,7 +457,7 @@ class CodeReviewEnv:
         self._task_id: str = ""
         self._step: int = 0
         self._max_steps: int = 3
-        self._snippet_index: int = 0
+        self._instance_index: int = 0
         self._done: bool = True
         self._history: list[dict[str, Any]] = []
         self._cumulative_reward: float = 0.0
@@ -301,11 +466,11 @@ class CodeReviewEnv:
     # Public API
     # ------------------------------------------------------------------
 
-    def reset(self, task_id: str = "bug_detection") -> Observation:
+    def reset(self, task_id: str = "feasibility_check") -> Observation:
         """Start a new episode for the given task.
 
-        Cycles through the snippet bank so repeated resets yield fresh
-        snippets.
+        Cycles through the instance bank so repeated resets yield fresh
+        scheduling problems.
         """
         self._task_id = task_id
         self._step = 0
@@ -315,20 +480,20 @@ class CodeReviewEnv:
 
         # Determine max steps based on task difficulty
         step_limits = {
-            "bug_detection": 3,
-            "bug_classification": 5,
-            "code_fix": 8,
+            "feasibility_check": 3,
+            "conflict_classification": 5,
+            "schedule_repair": 8,
         }
         self._max_steps = step_limits.get(task_id, 3)
 
-        # Pick next snippet (round-robin)
-        snippet = SNIPPET_BANK[self._snippet_index % len(SNIPPET_BANK)]
-        self._snippet_index += 1
+        # Pick next instance (round-robin)
+        instance_entry = INSTANCE_BANK[self._instance_index % len(INSTANCE_BANK)]
+        self._instance_index += 1
 
         context = self._context_for_task(task_id)
 
         return Observation(
-            code_snippet=snippet["code"],
+            schedule_instance=json.dumps(instance_entry["instance"], indent=2),
             task_id=task_id,
             context=context,
             step_number=self._step,
@@ -337,9 +502,8 @@ class CodeReviewEnv:
     def step(self, action: Action) -> tuple[Observation, float, bool, dict[str, Any]]:
         """Process one agent action and return (obs, reward, done, info)."""
         if self._done:
-            # Episode already finished — return terminal observation with 0 reward
             obs = Observation(
-                code_snippet="",
+                schedule_instance="{}",
                 task_id=self._task_id,
                 context="Episode is over. Call reset() to start a new one.",
                 step_number=self._step,
@@ -348,48 +512,48 @@ class CodeReviewEnv:
 
         self._step += 1
 
-        # Resolve the current snippet (the one served at reset or last step)
-        snippet = SNIPPET_BANK[(self._snippet_index - 1) % len(SNIPPET_BANK)]
+        # Resolve the current instance
+        instance_entry = INSTANCE_BANK[(self._instance_index - 1) % len(INSTANCE_BANK)]
 
-        # Grade the action
-        from graders.grader_detection import DetectionGrader
-        from graders.grader_classification import ClassificationGrader
-        from graders.grader_fix import FixGrader
+        # Grade the action using the appropriate grader
+        from graders.grader_detection import FeasibilityGrader
+        from graders.grader_classification import ConflictGrader
+        from graders.grader_fix import RepairGrader
 
         grader_map = {
-            "bug_detection": DetectionGrader(),
-            "bug_classification": ClassificationGrader(),
-            "code_fix": FixGrader(),
+            "feasibility_check": FeasibilityGrader(),
+            "conflict_classification": ConflictGrader(),
+            "schedule_repair": RepairGrader(),
         }
-        grader = grader_map.get(self._task_id, DetectionGrader())
-        reward = grader.grade(action, snippet)
+        grader = grader_map.get(self._task_id, FeasibilityGrader())
+        reward = grader.grade(action, instance_entry)
 
-        # Clamp reward to [0.0, 1.0]
+        # Clamp reward to [0.0, 1.0] — hard invariant
         reward = max(0.0, min(1.0, reward))
         self._cumulative_reward += reward
 
-        # Check termination
+        # Check termination: max steps reached or near-perfect reward
         done = self._step >= self._max_steps or reward >= 0.95
         self._done = done
 
-        # Record history
+        # Record history for state inspection
         self._history.append({
             "step": self._step,
-            "action": action.response,
+            "action": action.response[:200],  # truncate for storage
             "reward": reward,
         })
 
-        # Build next observation — either terminal or next snippet
+        # Build next observation
         if done:
             obs = Observation(
-                code_snippet="",
+                schedule_instance="{}",
                 task_id=self._task_id,
                 context="Episode complete." if reward >= 0.95 else "Max steps reached.",
                 step_number=self._step,
             )
         else:
             obs = Observation(
-                code_snippet=snippet["code"],
+                schedule_instance=json.dumps(instance_entry["instance"], indent=2),
                 task_id=self._task_id,
                 context=self._context_for_task(self._task_id),
                 step_number=self._step,
@@ -398,13 +562,18 @@ class CodeReviewEnv:
         info = {
             "cumulative_reward": round(self._cumulative_reward, 4),
             "steps_remaining": max(0, self._max_steps - self._step),
-            "snippet_description": snippet["description"],
+            "instance_description": instance_entry["description"],
         }
         return obs, round(reward, 4), done, info
 
     def state(self) -> dict[str, Any]:
         """Return full current environment state."""
-        snippet = SNIPPET_BANK[(self._snippet_index - 1) % len(SNIPPET_BANK)] if self._snippet_index > 0 else {}
+        if self._instance_index > 0:
+            entry = INSTANCE_BANK[(self._instance_index - 1) % len(INSTANCE_BANK)]
+            current_instance = entry["instance"].get("problem_id", "")
+        else:
+            current_instance = ""
+
         return {
             "task_id": self._task_id,
             "step": self._step,
@@ -412,8 +581,8 @@ class CodeReviewEnv:
             "done": self._done,
             "cumulative_reward": round(self._cumulative_reward, 4),
             "history": copy.deepcopy(self._history),
-            "current_snippet": snippet.get("code", ""),
-            "snippet_index": self._snippet_index,
+            "current_instance_id": current_instance,
+            "instance_index": self._instance_index,
         }
 
     # ------------------------------------------------------------------
@@ -423,23 +592,24 @@ class CodeReviewEnv:
     @staticmethod
     def _context_for_task(task_id: str) -> str:
         contexts = {
-            "bug_detection": (
-                "Review the code snippet. Respond with exactly 'yes' if there "
-                "is a bug, or 'no' if the code is correct."
+            "feasibility_check": (
+                "Analyse the scheduling instance. Respond with exactly 'feasible' if "
+                "all constraints are satisfied, or 'infeasible' if any constraint is violated."
             ),
-            "bug_classification": (
-                "The code contains a bug. Classify it as one of: "
-                "syntax_error, logic_error, null_reference, security_flaw, "
-                "performance_issue."
+            "conflict_classification": (
+                "The schedule contains a constraint violation. Classify it as exactly one of: "
+                "resource_overload, deadline_violation, precedence_violation, "
+                "availability_conflict, capacity_exceeded."
             ),
-            "code_fix": (
-                "The code contains a bug. Provide the corrected Python code "
-                "that fixes the issue. Return only the fixed code."
+            "schedule_repair": (
+                "The schedule is infeasible. Return a corrected schedule as a JSON object "
+                'with key "assignments": a list of {"job_id", "machine_id", "start_time"} '
+                "dicts that resolves all violations and minimises total makespan."
             ),
         }
-        return contexts.get(task_id, "Review the code snippet.")
+        return contexts.get(task_id, "Analyse the scheduling instance.")
 
     @staticmethod
-    def get_snippet_bank() -> list[dict[str, Any]]:
-        """Expose the snippet bank for external use (e.g., baseline)."""
-        return SNIPPET_BANK
+    def get_instance_bank() -> list[dict[str, Any]]:
+        """Expose the instance bank for external use (e.g., baseline)."""
+        return INSTANCE_BANK

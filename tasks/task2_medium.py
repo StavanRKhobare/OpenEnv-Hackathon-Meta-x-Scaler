@@ -1,12 +1,15 @@
-"""Task 2 — Bug Classification (Medium).
+"""Task 2 — Conflict Classification (Medium).
 
-The agent sees buggy Python code and must classify the bug type as one of:
-    syntax_error, logic_error, null_reference, security_flaw, performance_issue
+The agent observes an infeasible scheduling instance and must identify the
+constraint violation type from the closed vocabulary:
+    resource_overload, deadline_violation, precedence_violation,
+    availability_conflict, capacity_exceeded
 
 Grading:
     1.0  — exact match
-    0.5  — related category
-    0.0  — wrong / empty
+    0.5  — related category (same constraint family)
+    0.1  — valid category but wrong family
+    0.0  — empty or unknown
 Max steps per episode: 5.
 Expected agent accuracy: ~60%.
 """
@@ -15,20 +18,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from environment import SNIPPET_BANK, CodeReviewEnv
+from environment import INSTANCE_BANK, SchedulingOptEnv
 from models import Action
 
-TASK_ID = "bug_classification"
+TASK_ID = "conflict_classification"
 MAX_STEPS = 5
 DIFFICULTY = "medium"
 
 
-def run_episode(env: CodeReviewEnv, agent_fn: Any) -> dict[str, Any]:
-    """Run a single bug-classification episode.
+def run_episode(env: SchedulingOptEnv, agent_fn: Any) -> dict[str, Any]:
+    """Run a single conflict-classification episode.
 
     Args:
-        env: An initialized CodeReviewEnv instance.
-        agent_fn: Callable receiving an Observation, returning a bug-type string.
+        env: An initialized SchedulingOptEnv instance.
+        agent_fn: Callable receiving an Observation, returning a violation-type string.
 
     Returns:
         Episode summary dict.
@@ -36,6 +39,7 @@ def run_episode(env: CodeReviewEnv, agent_fn: Any) -> dict[str, Any]:
     obs = env.reset(task_id=TASK_ID)
     total_reward = 0.0
     steps = 0
+    info: dict[str, Any] = {}
 
     for _ in range(MAX_STEPS):
         response = agent_fn(obs)
@@ -55,10 +59,14 @@ def run_episode(env: CodeReviewEnv, agent_fn: Any) -> dict[str, Any]:
     }
 
 
-def get_buggy_snippets() -> list[dict[str, Any]]:
-    """Return only snippets that have bugs (for classification task)."""
+def get_infeasible_instances() -> list[dict[str, Any]]:
+    """Return only instances that have violations (for classification task)."""
     return [
-        {"code": s["code"], "bug_type": s["bug_type"], "description": s["description"]}
-        for s in SNIPPET_BANK
-        if s["has_bug"]
+        {
+            "instance": entry["instance"],
+            "violation_type": entry["violation_type"],
+            "description": entry["description"],
+        }
+        for entry in INSTANCE_BANK
+        if not entry["is_feasible"]
     ]

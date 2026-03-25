@@ -1,1 +1,1 @@
-"""Task definitions for the Code Review Environment."""
+"""Task definitions for the Scheduling Optimisation Environment."""
