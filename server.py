@@ -156,6 +156,16 @@ def grader(req: GradeRequest) -> GradeResponse:
 
 @app.get("/baseline")
 def baseline() -> dict[str, Any]:
-    """Trigger the baseline inference agent and return per-task scores."""
-    from baseline import run_baseline
-    return run_baseline()
+    """Trigger the baseline inference agent and return per-task scores.
+
+    Falls back to mock oracle responses when OPENAI_API_KEY is not set,
+    so this endpoint always returns a valid result.
+    """
+    try:
+        from baseline import run_baseline
+        return run_baseline()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Baseline run failed: {exc}",
+        ) from exc

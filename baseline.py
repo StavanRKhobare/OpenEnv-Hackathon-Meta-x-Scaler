@@ -14,7 +14,7 @@ import os
 import sys
 from typing import Any
 
-from environment import INSTANCE_BANK, SchedulingOptEnv
+from environment import INSTANCE_BANK
 from graders.grader_classification import ConflictGrader
 from graders.grader_detection import FeasibilityGrader
 from graders.grader_fix import RepairGrader
