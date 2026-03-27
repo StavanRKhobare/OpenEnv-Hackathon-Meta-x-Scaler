@@ -1,6 +1,15 @@
-# SchedulingOptEnv: A Markov Decision Environment for Training Autonomous Scheduling Optimisation Agents
+<h1 align="center">SchedulingOptEnv</h1>
+<h3 align="center">A Markov Decision Environment for Training Autonomous<br>Scheduling Optimisation Agents</h3>
 
-**Meta × Scaler OpenEnv Hackathon Submission**
+<p align="center"><em>Meta × Scaler — OpenEnv Hackathon Submission</em></p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.11+-blue" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/framework-FastAPI-009688" alt="FastAPI">
+  <img src="https://img.shields.io/badge/models-Pydantic%20v2-e92063" alt="Pydantic v2">
+  <img src="https://img.shields.io/badge/deploy-Docker%20%7C%20HF%20Spaces-yellow" alt="Docker | HF Spaces">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
+</p>
 
 ---
 
@@ -38,7 +47,7 @@ OpenEnv [1] provides an abstraction layer for building *interactive* environment
 
 ### 2.2 Scheduling Instance Corpus
 
-The environment ships with 12 curated scheduling instances spanning five constraint-violation classes plus two fully feasible baselines:
+The environment ships with **12 curated scheduling instances** spanning five constraint-violation classes plus two fully feasible baselines. Instances are drawn from a task-aware pool: feasibility-check episodes see all 12, while classification and repair episodes see only the 10 infeasible instances.
 
 | # | Feasible | Violation Class | Description |
 |---|----------|----------------|-------------|
@@ -133,11 +142,11 @@ where:
 
 ## 4. Server API
 
-The environment is exposed over HTTP via a FastAPI server.
+The environment is exposed over HTTP via a FastAPI server on port **7860** (Hugging Face Spaces default).
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/health` | Liveness probe |
+| `GET` | `/health` | Liveness probe — returns `{"status": "ok"}` |
 | `POST` | `/reset` | Begin new episode: `{"task_id": "feasibility_check"}` |
 | `POST` | `/step` | Submit action: `{"response": "infeasible", "task_id": "feasibility_check"}` |
 | `GET` | `/state` | Full internal state snapshot |
@@ -164,27 +173,62 @@ A standalone inference script (`baseline.py`) evaluates GPT-4o-mini on all three
 
 ## 6. Setup and Deployment
 
-### 6.1 Local
+### 6.1 Prerequisites
+
+| Requirement | Version |
+|-------------|---------|
+| Python | ≥ 3.11 |
+| pip | ≥ 22.0 |
+| Docker *(optional)* | ≥ 20.10 |
+| Git | ≥ 2.30 |
+
+### 6.2 Local Installation
 
 ```bash
+# 1. Clone the repository
+git clone https://github.com/Vittal-Mukunda/OpenEnv-Hackathon-Meta-x-Scaler.git
+cd OpenEnv-Hackathon-Meta-x-Scaler
+
+# 2. Create and activate a virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate        # Linux / macOS
+# .venv\Scripts\activate         # Windows
+
+# 3. Install dependencies
 pip install -r requirements.txt
+
+# 4. Launch the server
 uvicorn server:app --host 0.0.0.0 --port 7860
+
+# 5. Verify the server is running
+curl http://localhost:7860/health
+# Expected: {"status":"ok"}
 ```
 
-### 6.2 Docker
+### 6.3 Docker Deployment
 
 ```bash
+# Build the image
 docker build -t scheduling-opt-env .
+
+# Run the container
 docker run -p 7860:7860 scheduling-opt-env
+
+# Verify
+curl http://localhost:7860/health
 ```
 
-### 6.3 Hugging Face Spaces
+### 6.4 Hugging Face Spaces
 
 Push this repository to a Hugging Face Space configured with the **Docker** SDK. The server listens on port 7860, which Spaces exposes automatically. No additional configuration is required.
 
-### 6.4 Baseline (with LLM)
+### 6.5 Running the Baseline
 
 ```bash
+# Without API key (uses oracle mock responses — scores 1.0 on all tasks)
+python baseline.py
+
+# With OpenAI API key (evaluates GPT-4o-mini)
 export OPENAI_API_KEY=sk-...
 python baseline.py
 ```
@@ -249,20 +293,22 @@ curl -X POST http://localhost:7860/grader \
 ```
 .
 ├── openenv.yaml                  # OpenEnv metadata manifest
-├── models.py                     # Pydantic v2 data models
-├── environment.py                # SchedulingOptEnv (reset / step / state)
-├── server.py                     # FastAPI HTTP server
-├── baseline.py                   # GPT-4o-mini baseline script
-├── Dockerfile                    # Container definition (port 7860)
+├── models.py                     # Pydantic v2 data models (Observation, Action, Reward)
+├── environment.py                # SchedulingOptEnv core (reset / step / state + instance bank)
+├── server.py                     # FastAPI HTTP server (7 endpoints)
+├── baseline.py                   # GPT-4o-mini baseline with oracle fallback
+├── Dockerfile                    # Container definition (python:3.11-slim, port 7860)
 ├── requirements.txt              # Python dependencies
 ├── tasks/
-│   ├── task1_easy.py             # Feasibility check task module
-│   ├── task2_medium.py           # Conflict classification task module
-│   └── task3_hard.py             # Schedule repair task module
+│   ├── __init__.py               # Task module exports
+│   ├── task1_easy.py             # Feasibility check — episode runner + instance accessor
+│   ├── task2_medium.py           # Conflict classification — episode runner + instance accessor
+│   └── task3_hard.py             # Schedule repair — episode runner + instance accessor
 └── graders/
-    ├── grader_detection.py       # Grader: feasibility (binary)
-    ├── grader_classification.py  # Grader: conflict classification (multi-class)
-    └── grader_fix.py             # Grader: schedule repair (multi-component)
+    ├── __init__.py               # Grader exports (FeasibilityGrader, ConflictGrader, RepairGrader)
+    ├── grader_detection.py       # Grader: feasibility (binary, synonym-aware)
+    ├── grader_classification.py  # Grader: conflict classification (family-aware partial credit)
+    └── grader_fix.py             # Grader: schedule repair (4-component additive reward)
 ```
 
 ---

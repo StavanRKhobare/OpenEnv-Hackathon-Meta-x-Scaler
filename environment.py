@@ -17,7 +17,17 @@ import copy
 import json
 from typing import Any
 
+from graders.grader_classification import ConflictGrader
+from graders.grader_detection import FeasibilityGrader
+from graders.grader_fix import RepairGrader
 from models import Action, Observation
+
+# Grader singletons — one per task, reused across episodes.
+_GRADERS: dict[str, Any] = {
+    "feasibility_check": FeasibilityGrader(),
+    "conflict_classification": ConflictGrader(),
+    "schedule_repair": RepairGrader(),
+}
 
 # ---------------------------------------------------------------------------
 # Scheduling instance bank — 12 diverse instances.
@@ -574,20 +584,7 @@ class SchedulingOptEnv:
 
         self._step += 1
 
-        # Import graders here to avoid module-level circular import risk
-        from graders.grader_detection import FeasibilityGrader
-        from graders.grader_classification import ConflictGrader
-        from graders.grader_fix import RepairGrader
-
-        grader: Any
-        if self._task_id == "feasibility_check":
-            grader = FeasibilityGrader()
-        elif self._task_id == "conflict_classification":
-            grader = ConflictGrader()
-        elif self._task_id == "schedule_repair":
-            grader = RepairGrader()
-        else:
-            grader = FeasibilityGrader()
+        grader = _GRADERS.get(self._task_id, _GRADERS["feasibility_check"])
 
         reward: float = grader.grade(action, self._current_instance)
         reward = max(0.0, min(1.0, float(reward)))  # hard clamp — invariant
