@@ -1,15 +1,19 @@
 """Inference script for the Scheduling Optimisation Environment.
 
-Runs an LLM agent (configured via environment variables) against all three
-tasks and emits structured [START] / [STEP] / [END] logs for automated
-evaluation.
+Emits exactly three line types per episode:
+    [START] task=<task_name> env=<benchmark> model=<model_name>
+    [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
+    [END]   success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...,rn>
 
 Required environment variables:
     API_BASE_URL  — Base URL for the OpenAI-compatible API endpoint
-    MODEL_NAME    — Model identifier (e.g. "gpt-4o-mini")
-    HF_TOKEN      — API key / Hugging Face token
+    MODEL_NAME    — Model identifier to use for inference
+    HF_TOKEN      — Your Hugging Face / API key
 
-Usage:
+Usage (oracle mock — no API key needed):
+    python inference.py
+
+Usage (real LLM):
     API_BASE_URL=https://api.openai.com/v1 MODEL_NAME=gpt-4o-mini HF_TOKEN=sk-... python inference.py
 """
 
@@ -18,7 +22,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any
+from typing import List, Optional
 
 from openai import OpenAI
 
@@ -26,26 +30,48 @@ from environment import INSTANCE_BANK, SchedulingOptEnv
 from models import Action
 
 # ---------------------------------------------------------------------------
-# Configuration — all sourced from environment variables
+# Configuration
 # ---------------------------------------------------------------------------
 
-API_BASE_URL: str = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME: str = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-HF_TOKEN: str = os.environ.get("HF_TOKEN", "")
+API_BASE_URL: str = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+MODEL_NAME: str = os.getenv("MODEL_NAME") or "gpt-4o-mini"
+HF_TOKEN: str = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or ""
+BENCHMARK: str = "scheduling-opt-env"
+SUCCESS_THRESHOLD: float = 0.95
 
-if not HF_TOKEN:
-    print(
-        "[WARN] HF_TOKEN not set — falling back to oracle mock responses.",
-        file=sys.stderr,
-    )
+USE_LLM: bool = bool(HF_TOKEN)
 
-# ---------------------------------------------------------------------------
-# OpenAI client (uses API_BASE_URL + HF_TOKEN as credentials)
-# ---------------------------------------------------------------------------
+if not USE_LLM:
+    print("[WARN] HF_TOKEN not set — using oracle mock responses.", file=sys.stderr, flush=True)
 
 client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "no-key")
 
-USE_LLM: bool = bool(HF_TOKEN)
+# ---------------------------------------------------------------------------
+# Structured log helpers (exact required format)
+# ---------------------------------------------------------------------------
+
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    # Sanitise action: collapse newlines and truncate to keep lines readable
+    action_clean = action.replace("\n", " ").replace("\r", "")[:120]
+    print(
+        f"[STEP] step={step} action={action_clean} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +80,6 @@ USE_LLM: bool = bool(HF_TOKEN)
 
 
 def _llm(system: str, user: str) -> str:
-    """Call the configured model and return the stripped response text."""
     try:
         resp = client.chat.completions.create(
             model=MODEL_NAME,
@@ -65,9 +90,9 @@ def _llm(system: str, user: str) -> str:
             max_tokens=1024,
             temperature=0.0,
         )
-        return resp.choices[0].message.content.strip()
+        return (resp.choices[0].message.content or "").strip()
     except Exception as exc:
-        print(f"[LLM error] {exc}", file=sys.stderr)
+        print(f"[DEBUG] LLM error: {exc}", file=sys.stderr, flush=True)
         return ""
 
 
@@ -97,50 +122,7 @@ def _mock_repair(idx: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Structured log helpers
-# ---------------------------------------------------------------------------
-
-
-def log_start(task_id: str, instance_id: int, extra: dict[str, Any] | None = None) -> None:
-    payload: dict[str, Any] = {"task_id": task_id, "instance_id": instance_id}
-    if extra:
-        payload.update(extra)
-    print(f"[START] {json.dumps(payload)}", flush=True)
-
-
-def log_step(
-    task_id: str,
-    instance_id: int,
-    step: int,
-    action: str,
-    reward: float,
-    done: bool,
-    feedback: str = "",
-) -> None:
-    payload: dict[str, Any] = {
-        "task_id": task_id,
-        "instance_id": instance_id,
-        "step": step,
-        "action": action,
-        "reward": round(reward, 4),
-        "done": done,
-    }
-    if feedback:
-        payload["feedback"] = feedback
-    print(f"[STEP] {json.dumps(payload)}", flush=True)
-
-
-def log_end(task_id: str, instance_id: int, final_reward: float) -> None:
-    payload: dict[str, Any] = {
-        "task_id": task_id,
-        "instance_id": instance_id,
-        "final_reward": round(final_reward, 4),
-    }
-    print(f"[END] {json.dumps(payload)}", flush=True)
-
-
-# ---------------------------------------------------------------------------
-# Per-task agent logic
+# Per-task agent prompts
 # ---------------------------------------------------------------------------
 
 
@@ -177,105 +159,95 @@ def _agent_repair(instance_str: str, instance_idx: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Episode runner
+# Single episode runner
 # ---------------------------------------------------------------------------
+
+TASK_CONFIG = {
+    "feasibility_check":      {"max_steps": 3,  "agent": _agent_feasibility},
+    "conflict_classification":{"max_steps": 5,  "agent": _agent_classification},
+    "schedule_repair":        {"max_steps": 8,  "agent": _agent_repair},
+}
 
 
 def run_episode(
     env: SchedulingOptEnv,
     task_id: str,
     instance_idx: int,
-    instance_entry: dict[str, Any],
-    max_steps: int,
-    agent_fn,
-) -> float:
-    """Run one episode and return the final reward."""
-    obs = env.reset(task_id=task_id)
+    instance_entry: dict,
+) -> None:
+    """Run one episode and emit [START] / [STEP]s / [END]."""
+    cfg = TASK_CONFIG[task_id]
+    max_steps: int = cfg["max_steps"]
+    agent_fn = cfg["agent"]
     instance_str = json.dumps(instance_entry["instance"], indent=2)
 
-    log_start(task_id, instance_idx)
+    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
-    final_reward = 0.0
-    for step_num in range(1, max_steps + 1):
-        response = agent_fn(instance_str, instance_idx)
-        action = Action(response=response, task_id=task_id)
-        obs, reward, done, info = env.step(action)
+    obs = env.reset(task_id=task_id)
 
-        feedback = info.get("grading_breakdown", {}).get("feedback", "")
-        log_step(task_id, instance_idx, step_num, response, reward, done, feedback)
+    rewards: List[float] = []
+    steps_taken = 0
+    success = False
 
-        final_reward = reward
-        if done:
-            break
+    try:
+        for step in range(1, max_steps + 1):
+            response = agent_fn(instance_str, instance_idx)
+            action = Action(response=response, task_id=task_id)
 
-    log_end(task_id, instance_idx, final_reward)
-    return final_reward
+            obs, reward, done, info = env.step(action)
+
+            error = info.get("grading_breakdown", {}).get("feedback") if reward < SUCCESS_THRESHOLD else None
+            # Only surface error string for failed/partial steps
+            if reward >= SUCCESS_THRESHOLD:
+                error = None
+
+            rewards.append(reward)
+            steps_taken = step
+            log_step(step=step, action=response, reward=reward, done=done, error=error)
+
+            if done:
+                break
+
+        final_reward = rewards[-1] if rewards else 0.0
+        score = min(max(final_reward, 0.0), 1.0)
+        success = score >= SUCCESS_THRESHOLD
+
+    except Exception as exc:
+        print(f"[DEBUG] Episode error: {exc}", file=sys.stderr, flush=True)
+        if not rewards:
+            rewards = [0.0]
+        score = 0.0
+
+    finally:
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
 # ---------------------------------------------------------------------------
-# Main evaluation loop
+# Main — run all 32 episodes across 3 tasks
 # ---------------------------------------------------------------------------
 
 
 def main() -> None:
     env = SchedulingOptEnv()
-    all_scores: dict[str, list[float]] = {
-        "feasibility_check": [],
-        "conflict_classification": [],
-        "schedule_repair": [],
-    }
 
-    mode = f"LLM ({MODEL_NAME} @ {API_BASE_URL})" if USE_LLM else "oracle mock"
-    print(json.dumps({"event": "eval_start", "mode": mode, "model": MODEL_NAME}), flush=True)
-
-    # --- Task 1: Feasibility Check (all 12 instances) ---
+    # Task 1: Feasibility Check — all 12 instances
     for i, entry in enumerate(INSTANCE_BANK):
-        score = run_episode(
-            env, "feasibility_check", i, entry,
-            max_steps=3,
-            agent_fn=_agent_feasibility,
-        )
-        all_scores["feasibility_check"].append(score)
+        run_episode(env, "feasibility_check", i, entry)
 
-    # --- Task 2: Conflict Classification (10 infeasible instances) ---
+    # Task 2: Conflict Classification — 10 infeasible instances only
     for i, entry in enumerate(INSTANCE_BANK):
-        if entry["is_feasible"]:
-            continue
-        score = run_episode(
-            env, "conflict_classification", i, entry,
-            max_steps=5,
-            agent_fn=_agent_classification,
-        )
-        all_scores["conflict_classification"].append(score)
+        if not entry["is_feasible"]:
+            run_episode(env, "conflict_classification", i, entry)
 
-    # --- Task 3: Schedule Repair (10 infeasible instances) ---
+    # Task 3: Schedule Repair — 10 infeasible instances only
     for i, entry in enumerate(INSTANCE_BANK):
-        if entry["is_feasible"]:
-            continue
-        score = run_episode(
-            env, "schedule_repair", i, entry,
-            max_steps=8,
-            agent_fn=_agent_repair,
-        )
-        all_scores["schedule_repair"].append(score)
-
-    # --- Summary ---
-    summary: dict[str, Any] = {}
-    overall_scores: list[float] = []
-    for task_id, scores in all_scores.items():
-        avg = round(sum(scores) / len(scores), 4) if scores else 0.0
-        summary[task_id] = {"average_score": avg, "num_instances": len(scores)}
-        overall_scores.extend(scores)
-
-    overall = round(sum(overall_scores) / len(overall_scores), 4) if overall_scores else 0.0
-    summary["overall_average"] = overall
-
-    print(json.dumps({"event": "eval_end", "summary": summary}), flush=True)
+        if not entry["is_feasible"]:
+            run_episode(env, "schedule_repair", i, entry)
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(f"[ERROR] {exc}", file=sys.stderr)
+        print(f"[ERROR] {exc}", file=sys.stderr, flush=True)
         sys.exit(1)
