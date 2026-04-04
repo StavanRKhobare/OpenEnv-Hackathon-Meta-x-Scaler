@@ -1,10 +1,16 @@
 ---
-title: OpenRnv
-emoji: 🚀
+title: SchedulingOptEnv
+emoji: 🗓️
 colorFrom: blue
-colorTo: purple
+colorTo: green
 sdk: docker
 app_port: 7860
+tags:
+  - openenv
+  - reinforcement-learning
+  - scheduling
+  - agent
+license: mit
 ---
 
 <h1 align="center">SchedulingOptEnv</h1>
