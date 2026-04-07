@@ -61,22 +61,22 @@ class ConflictGrader:
         expected: str = ground_truth.get("violation_type") or ""
 
         if not response:
-            self._record("", expected, 0.0, "Empty response.")
-            return 0.0
+            self._record("", expected, 0.01, "Empty response.")
+            return 0.01
 
         # Exact match
         if response == expected:
-            self._record(response, expected, 1.0, "Exact match.")
-            return 1.0
+            self._record(response, expected, 0.99, "Exact match.")
+            return 0.99
 
         # Not in vocabulary
         if response not in VALID_CATEGORIES:
             self._record(
-                response, expected, 0.0,
+                response, expected, 0.01,
                 f"'{response}' is not a valid category. "
                 f"Choose from: {', '.join(sorted(VALID_CATEGORIES))}.",
             )
-            return 0.0
+            return 0.01
 
         # Same constraint family → partial credit
         if _same_family(response, expected):

@@ -54,7 +54,7 @@ class FeasibilityGrader:
                 "correct": False,
                 "feedback": "Empty response — reply with 'feasible' or 'infeasible'.",
             }
-            return 0.0
+            return 0.01
 
         # Normalise response to canonical form
         if response in _FEASIBLE_WORDS:
@@ -85,5 +85,5 @@ class FeasibilityGrader:
                 else f"Wrong — the schedule is {expected}, not {predicted}."
             ),
         }
-        # Exact match → 1.0; wrong normalised answer → 0.1 (keeps gradient signal)
-        return 1.0 if correct else 0.1
+        # Exact match → 0.99; wrong normalised answer → 0.1 (keeps gradient signal)
+        return 0.99 if correct else 0.1

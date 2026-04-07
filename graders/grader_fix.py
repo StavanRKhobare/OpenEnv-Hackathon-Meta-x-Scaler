@@ -46,9 +46,9 @@ class RepairGrader:
                 constraint_detail={}, makespan=0,
                 optimal_makespan=optimal_makespan,
             )
-            return 0.0
+            return 0.01
 
-        score = 0.0
+        score = 0.01
 
         # ------------------------------------------------------------------
         # Component 1a — Is the response parseable JSON? (0.20)
@@ -60,7 +60,7 @@ class RepairGrader:
                 constraint_detail={}, makespan=0,
                 optimal_makespan=optimal_makespan,
             )
-            return 0.0  # not JSON → no partial credit at all
+            return 0.01  # not JSON → no partial credit at all
 
         score += 0.20  # JSON parseable
 
@@ -107,7 +107,7 @@ class RepairGrader:
             makespan=makespan,
             optimal_makespan=optimal_makespan,
         )
-        return round(max(0.0, min(1.0, score)), 4)
+        return round(max(0.01, min(0.99, score)), 4)
 
     # ------------------------------------------------------------------
     # Breakdown recording
